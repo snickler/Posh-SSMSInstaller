@@ -1,5 +1,8 @@
 # Usage:
-#   .\Download-SSMS.ps1                                   # Install SSMS, download components, and copy to installation
+#   .\Download-SSMS.ps1                                   # Install SSMS 21 release, download components, and copy to installation
+#   .\Download-SSMS.ps1 -Version 22                       # Install SSMS 22 release
+#   .\Download-SSMS.ps1 -Channel preview                  # Install SSMS 21 preview
+#   .\Download-SSMS.ps1 -Version 22 -Channel preview      # Install SSMS 22 preview
 #   .\Download-SSMS.ps1 -DownloadPath "C:\Temp"           # Custom download location
 #   .\Download-SSMS.ps1 -Verbose                          # Verbose output
 #
@@ -13,10 +16,28 @@
 # 7. Restores original execution policy
 
 param(
-    [string]$DownloadPath = ".\SSMS21-Downloads",
+    [int]$Version = 21,
+    [string]$Channel = "release",
+    [string]$DownloadPath = "",
     [string]$ExtractPath = ".\Extracted",
     [switch]$Verbose
 )
+
+# Validate parameters
+if ($Version -notin @(21, 22)) {
+    Write-Error "Version must be either 21 or 22"
+    exit 1
+}
+
+if ($Channel -notin @("release", "preview")) {
+    Write-Error "Channel must be either 'release' or 'preview'"
+    exit 1
+}
+
+# Set default download path if not specified
+if ([string]::IsNullOrEmpty($DownloadPath)) {
+    $DownloadPath = ".\SSMS$Version-Downloads"
+}
 
 # Store original execution policies for restoration
 $script:OriginalExecutionPolicies = @{}
@@ -129,8 +150,10 @@ if (-not (Test-Administrator)) {
     Write-Host "This script requires administrator privileges. Restarting as administrator..." -ForegroundColor Yellow
     
     $arguments = ""
-    if ($DownloadPath -ne ".\SSMS21-Downloads") { $arguments += " -DownloadPath $DownloadPath" }
-    if ($ExtractPath -ne ".\Extracted") { $arguments += " -ExtractPath $ExtractPath" }
+    if ($Version -ne 21) { $arguments += " -Version $Version" }
+    if ($Channel -ne "release") { $arguments += " -Channel $Channel" }
+    if ($DownloadPath -ne ".\SSMS$Version-Downloads") { $arguments += " -DownloadPath `"$DownloadPath`"" }
+    if ($ExtractPath -ne ".\Extracted") { $arguments += " -ExtractPath `"$ExtractPath`"" }
     if ($Verbose) { $arguments += " -Verbose" }
     
     Start-Process PowerShell -Verb RunAs -ArgumentList "-NoProfile -ExecutionPolicy Bypass -File `"$($MyInvocation.MyCommand.Path)`"$arguments"
@@ -331,8 +354,11 @@ function Expand-AllVsixFiles {
 
 # Function to find SSMS installation path using VSSetup PowerShell module
 function Get-SSMSInstallationPath {
+    param(
+        [int]$Version = 21
+    )
     try {
-        Write-VerboseOutput "Searching for SSMS installation using VSSetup module..."
+        Write-VerboseOutput "Searching for SSMS $Version installation using VSSetup module..."
         
         # Check if VSSetup module is available, install if needed
         if (-not (Get-Module -ListAvailable -Name VSSetup)) {
@@ -344,7 +370,7 @@ function Get-SSMSInstallationPath {
             catch {
                 Write-Warning "Failed to install VSSetup module: $($_.Exception.Message)"
                 Write-VerboseOutput "Falling back to registry and common paths method..."
-                return Get-SSMSInstallationPathFallback
+                return Get-SSMSInstallationPathFallback -Version $Version
             }
         }
         
@@ -355,7 +381,7 @@ function Get-SSMSInstallationPath {
         $instances = Get-VSSetupInstance | Where-Object {$_.Product.Chip -eq "x64"}
         if ($instances.Count -eq 0) {
             Write-Warning "No Visual Studio instances found with x64 architecture"
-            return Get-SSMSInstallationPathFallback
+            return Get-SSMSInstallationPathFallback -Version $Version
         }
         # Look for SSMS instance
         foreach ($instance in $instances) {
@@ -364,38 +390,41 @@ function Get-SSMSInstallationPath {
             $installationPath = $instance.InstallationPath
             Write-VerboseOutput "Found instance: $displayName at $installationPath"
             
-            # Check if this is SSMS 21
-            if ($displayName -match "SQL Server Management Studio" -and $displayName -match "21") {
-                Write-Host "Found SSMS 21 installation: $displayName" -ForegroundColor Green
+            # Check if this is the requested SSMS version
+            if ($displayName -match "SQL Server Management Studio" -and $displayName -match "$Version") {
+                Write-Host "Found SSMS $Version installation: $displayName" -ForegroundColor Green
                 Write-Host "Installation path: $installationPath" -ForegroundColor Green
                 return $installationPath
             }
         }
         
-        Write-Warning "SSMS 21 instance not found via VSSetup module"
+        Write-Warning "SSMS $Version instance not found via VSSetup module"
         
         # Try fallback method
         Write-VerboseOutput "Trying fallback method to find SSMS installation..."
-        return Get-SSMSInstallationPathFallback
+        return Get-SSMSInstallationPathFallback -Version $Version
     }
     catch {
         Write-VerboseOutput "VSSetup module failed: $($_.Exception.Message)"
         
         # Fallback: Try common SSMS installation paths
         Write-VerboseOutput "Trying fallback method to find SSMS installation..."
-        return Get-SSMSInstallationPathFallback
+        return Get-SSMSInstallationPathFallback -Version $Version
     }
 }
 
 # Fallback function to find SSMS installation using registry and common paths
 function Get-SSMSInstallationPathFallback {
+    param(
+        [int]$Version = 21
+    )
     try {
-        Write-VerboseOutput "Using fallback method to locate SSMS installation..."
+        Write-VerboseOutput "Using fallback method to locate SSMS $Version installation..."
         
         # Try registry first
         $registryPaths = @(
-            "HKLM:\SOFTWARE\Microsoft\SQL Server Management Studio\21.0",
-            "HKLM:\SOFTWARE\WOW6432Node\Microsoft\SQL Server Management Studio\21.0",
+            "HKLM:\SOFTWARE\Microsoft\SQL Server Management Studio\$Version.0",
+            "HKLM:\SOFTWARE\WOW6432Node\Microsoft\SQL Server Management Studio\$Version.0",
             "HKLM:\SOFTWARE\Microsoft\VisualStudio\Packages",
             "HKLM:\SOFTWARE\WOW6432Node\Microsoft\VisualStudio\Packages"
         )
@@ -426,12 +455,17 @@ function Get-SSMSInstallationPathFallback {
         
         # Try common SSMS installation paths
         $commonPaths = @(
-            "${env:ProgramFiles(x86)}\Microsoft SQL Server Management Studio 21",
-            "${env:ProgramFiles}\Microsoft SQL Server Management Studio 21",
+            "${env:ProgramFiles(x86)}\Microsoft SQL Server Management Studio $Version",
+            "${env:ProgramFiles}\Microsoft SQL Server Management Studio $Version",
             "${env:ProgramFiles(x86)}\Microsoft Visual Studio\2022\SQL",
-            "${env:ProgramFiles}\Microsoft Visual Studio\2022\SQL",
-            "${env:ProgramFiles(x86)}\Microsoft SQL Server Management Studio 20",
-            "${env:ProgramFiles}\Microsoft SQL Server Management Studio 20"
+            "${env:ProgramFiles}\Microsoft Visual Studio\2022\SQL"
+        )
+        
+        # Add fallback paths for the other version (in case user switches versions)
+        $otherVersion = if ($Version -eq 21) { 22 } else { 21 }
+        $commonPaths += @(
+            "${env:ProgramFiles(x86)}\Microsoft SQL Server Management Studio $otherVersion",
+            "${env:ProgramFiles}\Microsoft SQL Server Management Studio $otherVersion"
         )
         
         foreach ($path in $commonPaths) {
@@ -539,7 +573,7 @@ $targetItemIds = @(
     "Microsoft.VisualStudio.ExtensionManager"
 )
 
-Write-Host "Starting SSMS Component Download Script" -ForegroundColor Cyan
+Write-Host "Starting SSMS $Version ($Channel) Component Download Script" -ForegroundColor Cyan
 Write-Host "=========================================" -ForegroundColor Cyan
 
 # Main script execution with error handling
@@ -548,8 +582,8 @@ try {
     Stop-VisualStudioInstaller
 
     # Step 0: Download and run SSMS installer
-    Write-Host "`n0. Downloading and installing SSMS..." -ForegroundColor Yellow
-    $ssmsInstallerUrl = "https://aka.ms/ssms/21/release/vs_SSMS.exe"
+    Write-Host "`n0. Downloading and installing SSMS $Version ($Channel channel)..." -ForegroundColor Yellow
+    $ssmsInstallerUrl = "https://aka.ms/ssms/$Version/$Channel/vs_SSMS.exe"
     $ssmsInstallerPath = Join-Path $DownloadPath "vs_SSMS.exe"
 
     # Create download directory if it doesn't exist
@@ -589,8 +623,8 @@ try {
     }
 
     # Step 1: Get the channel manifest
-    Write-Host "`n1. Fetching SSMS21 channel manifest..." -ForegroundColor Yellow
-    $channelUrl = "https://aka.ms/ssms/21/release/channel"
+    Write-Host "`n1. Fetching SSMS$Version ($Channel) channel manifest..." -ForegroundColor Yellow
+    $channelUrl = "https://aka.ms/ssms/$Version/$Channel/channel"
 
     try {
         Write-VerboseOutput "Requesting: $channelUrl"
@@ -695,12 +729,12 @@ try {
     
         # Copy extracted files to SSMS installation if extraction was successful
         if ($extractedCount -gt 0) {
-            $ssmsPath = Get-SSMSInstallationPath
+            $ssmsPath = Get-SSMSInstallationPath -Version $Version
             if ($ssmsPath) {
                 Copy-ExtractedFilesToSSMS -ExtractPath $ExtractPath -SSMSPath $ssmsPath
             }
             else {
-                Write-Warning "Could not locate SSMS installation. Extracted files remain in: $ExtractPath"
+                Write-Warning "Could not locate SSMS $Version installation. Extracted files remain in: $ExtractPath"
             }    
         }
     }
